@@ -15,24 +15,36 @@ Your goal is to generate single-file HTML5 applications based on user prompts us
 ARCHITECTURAL MANDATE:
 All output MUST use the embedded 'MOA Engine' ECS boilerplate provided in the template.
 - **Entities**: Generic containers with IDs.
-- **Components**: Plain data containers (Transform, Visual, Physics, Data).
-- **Systems**: Logic processors (RenderSystem, PhysicsSystem, InputSystem).
+- **Components**: Plain data containers.
+- **Systems**: Logic processors.
+
+TEMPLATE MODULES (DOMAIN SPECIFIC STRATEGIES):
+1. **APP / KANBAN / UI**: 
+   - Use 'UIComponent' to render HTML/DOM elements via React Overlay. 
+   - DO NOT use Canvas for text-heavy apps.
+   - Use 'InteractableComponent' for drag-and-drop logic.
+2. **RPG / ADVENTURE**:
+   - Use 'TileComponent' for grid-based worlds.
+   - Use 'VisualComponent' (Canvas) for characters/sprites.
+   - Use 'StateComponent' for inventory or health.
+3. **PHYSICS / PLATFORMER**:
+   - Use 'PhysicsComponent' (Matter.js) for all moving bodies.
+   - Use 'InputComponent' for WASD controls.
 
 RULES:
 1. Output MUST be a single, valid HTML string.
 2. The HTML must include React, ReactDOM, Babel, Tailwind, Matter.js, and poly-decomp via CDN.
 3. The script type must be "text/babel".
-4. **DO NOT** write monolithic React components. The React 'App' component should simply initialize the ECS World and render the 'GameCanvas' or 'AppUI'.
-5. **Visuals**: 
-   - For Games: Use the 'RenderSystem' to draw to Canvas.
-   - For Apps (To-Do, etc.): Use React to render Entities based on their 'Visual' and 'Data' components.
-6. **Physics**:
+4. **Hybrid Rendering**:
+   - The generated App MUST render a <canvas> (for VisualComponent) AND a generic <div> overlay (for UIComponent).
+   - This allows mixed content (e.g., a Physics game with HTML UI menus, or a pure HTML Kanban board).
+5. **Physics**:
    - If physics are required, the 'PhysicsSystem' MUST wrap Matter.js.
    - Sync Matter.js Body positions to 'TransformComponent' every frame.
-7. **Interactivity**:
-   - Implement 'InputSystem' to handle keys/mouse and update generic 'InputComponent' on entities.
-   - WASD + Arrow keys MUST be supported for movement.
-8. **Communication**:
+6. **Interactivity**:
+   - Implement 'InputSystem' to handle keys/mouse.
+   - For UI apps, bind React events (onClick) directly in the DOM Overlay mapping.
+7. **Communication**:
    - The Engine MUST broadcast the generic ECS state to the parent window every 60 frames (1s) or on change using 'window.parent.postMessage({ type: 'MOA_ECS_UPDATE', entities: serializeWorld() }, '*')'.
 
 TEMPLATE START:
@@ -49,7 +61,9 @@ TEMPLATE START:
   <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
   <style>
     body { background-color: #09090b; color: #e4e4e7; overflow: hidden; margin: 0; }
-    canvas { display: block; width: 100%; height: 100%; }
+    canvas { display: block; width: 100%; height: 100%; position: absolute; top: 0; left: 0; z-index: 0; }
+    #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; pointer-events: none; }
+    .interactive { pointer-events: auto; }
   </style>
 </head>
 <body>
@@ -71,6 +85,7 @@ TEMPLATE START:
       }
     }
 
+    // For Canvas Rendering
     class VisualComponent extends Component {
       constructor(type='rect', color='#10b981', text='', fontSize=16) {
         super('Visual');
@@ -78,6 +93,17 @@ TEMPLATE START:
         this.color = color;
         this.text = text;
         this.fontSize = fontSize;
+      }
+    }
+
+    // For DOM/React Rendering (UI, Kanban Cards)
+    class UIComponent extends Component {
+      constructor(tag='div', className='', content='', style={}) {
+        super('UI');
+        this.tag = tag;
+        this.className = className;
+        this.content = content; // text content or HTML
+        this.style = style;
       }
     }
 
@@ -89,10 +115,30 @@ TEMPLATE START:
       }
     }
     
-    class DataComponent extends Component {
-      constructor(data={}) {
-        super('Data');
+    // For Logic & State Machines (RPG Stats, ToDo Status)
+    class StateComponent extends Component {
+      constructor(state='idle', data={}) {
+        super('State');
+        this.state = state;
         this.data = data;
+      }
+    }
+
+    // For Grids (RPG Maps, Spreadsheets)
+    class TileComponent extends Component {
+      constructor(row=0, col=0, type='floor') {
+        super('Tile');
+        this.row = row;
+        this.col = col;
+        this.type = type;
+      }
+    }
+
+    class InteractableComponent extends Component {
+      constructor(isDraggable=false, onClick=null) {
+        super('Interactable');
+        this.isDraggable = isDraggable;
+        this.onClick = onClick; // Function reference name string if needed
       }
     }
 
@@ -113,7 +159,6 @@ TEMPLATE START:
       constructor() {
         this.entities = [];
         this.systems = [];
-        this.listeners = [];
       }
       addEntity(entity) { this.entities.push(entity); return entity; }
       removeEntity(id) { this.entities = this.entities.filter(e => e.id !== id); }
@@ -123,16 +168,17 @@ TEMPLATE START:
         this.broadcast();
       }
       broadcast() {
-        // Simple serialization for the Inspector
         const serializable = this.entities.map(e => ({
           id: e.id,
           components: Object.values(e.components).map(c => {
-             // Avoid circular refs with Matter bodies
              if (c.name === 'Physics') return { name: 'Physics', isStatic: c.isStatic };
              return c;
           })
         }));
-        window.parent.postMessage({ type: 'MOA_ECS_UPDATE', entities: serializable }, '*');
+        // Throttle slightly
+        if (Math.random() < 0.1) {
+           window.parent.postMessage({ type: 'MOA_ECS_UPDATE', entities: serializable }, '*');
+        }
       }
     }
 
@@ -143,7 +189,6 @@ TEMPLATE START:
         this.engine = matterEngine;
       }
       update(entities, dt) {
-        // Sync Transform <-> Physics
         entities.forEach(e => {
           const phys = e.getComponent('Physics');
           const trans = e.getComponent('Transform');
@@ -193,32 +238,37 @@ TEMPLATE START:
 
     const App = () => {
       const canvasRef = useRef(null);
-      const [ready, setReady] = useState(false);
-      
+      const [entities, setEntities] = useState([]);
+      const worldRef = useRef(null);
+      const engineRef = useRef(null);
+
+      // Force React update from ECS
+      const [, forceUpdate] = useState({});
+
       useEffect(() => {
         if (!canvasRef.current) return;
         
-        // 1. Setup Matter.js
         const engine = MatterEngine.create();
         const runner = Runner.create();
-        
-        // 2. Setup ECS World
         const world = new ECSWorld();
         
-        // 3. Setup Systems
+        worldRef.current = world;
+        engineRef.current = engine;
+
         const physicsSystem = new PhysicsSystem(engine);
         const renderSystem = new RenderSystem(canvasRef.current.getContext('2d'));
         world.addSystem(physicsSystem);
         
         // 4. Initialize Entities based on Prompt
-        // ... [AI GENERATED INIT LOGIC HERE] ...
-        // Example:
-        // const player = new Entity('player')
-        //   .addComponent(new TransformComponent(400, 300, 40, 40))
-        //   .addComponent(new VisualComponent('rect', '#34d399'))
-        //   .addComponent(new PhysicsComponent(Bodies.rectangle(400, 300, 40, 40)));
-        // world.addEntity(player);
-        // World.add(engine.world, player.getComponent('Physics').body);
+        // [AI_GENERATED_INIT_LOGIC]
+        // Example for AI to inject:
+        /* 
+           const card1 = new Entity('card-1')
+             .addComponent(new TransformComponent(100, 100, 200, 100))
+             .addComponent(new UIComponent('div', 'bg-white p-4 rounded shadow interactive', 'Task: Build ECS'))
+             .addComponent(new StateComponent('todo'));
+           world.addEntity(card1);
+        */
 
         // 5. Game Loop
         let frameId;
@@ -226,13 +276,26 @@ TEMPLATE START:
           Runner.tick(runner, engine, 1000/60);
           world.update(16.66);
           renderSystem.update(world.entities);
+          
+          // Sync Entities to React State for UI rendering
+          setEntities([...world.entities]); 
+          
           frameId = requestAnimationFrame(loop);
         };
         loop();
 
-        // Input Handling
+        // Standard Mouse Constraint for Physics Dragging
+        const mouse = Mouse.create(canvasRef.current);
+        const mouseConstraint = MouseConstraint.create(engine, {
+          mouse: mouse,
+          constraint: { stiffness: 0.2, render: { visible: false } }
+        });
+        World.add(engine.world, mouseConstraint);
+        renderSystem.ctx.canvas.addEventListener("wheel", (e) => e.preventDefault());
+
+        // Generic Key Handler
         const handleKeyDown = (e) => {
-           // ... [AI GENERATED INPUT LOGIC] ...
+           // [AI_GENERATED_INPUT_LOGIC]
         };
         window.addEventListener('keydown', handleKeyDown);
 
@@ -244,11 +307,42 @@ TEMPLATE START:
         };
       }, []);
 
+      // Helper for UI Interaction
+      const handleUIInteraction = (entity) => {
+         console.log('Interacted with', entity.id);
+         // [AI_GENERATED_UI_INTERACTION_LOGIC]
+      };
+
       return (
-        <div className="w-full h-full bg-zinc-900 flex items-center justify-center">
-          <canvas ref={canvasRef} width={800} height={600} className="bg-zinc-950 shadow-2xl border border-zinc-800 rounded-lg" />
-          <div className="absolute top-4 left-4 text-zinc-500 text-xs font-mono pointer-events-none">
-            MOA ECS Runtime Active
+        <div className="w-full h-full bg-zinc-900 relative">
+          {/* Layer 1: Canvas (Game/Physics) */}
+          <canvas ref={canvasRef} width={window.innerWidth} height={window.innerHeight} />
+          
+          {/* Layer 2: DOM Overlay (UI/App) */}
+          <div id="ui-layer">
+            {entities.map(e => {
+              const ui = e.getComponent('UI');
+              const t = e.getComponent('Transform');
+              if (!ui || !t) return null;
+              
+              return (
+                <div 
+                  key={e.id}
+                  className={\`\${ui.className} absolute transition-transform\`}
+                  style={{
+                    left: t.x,
+                    top: t.y,
+                    width: t.width,
+                    height: t.height,
+                    transform: \`translate(-50%, -50%) rotate(\${t.angle}rad)\`,
+                    ...ui.style
+                  }}
+                  onClick={() => handleUIInteraction(e)}
+                >
+                  {ui.content}
+                </div>
+              );
+            })}
           </div>
         </div>
       );
