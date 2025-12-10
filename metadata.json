@@ -1,0 +1,5 @@
+{
+  "name": "MOA Game Engine",
+  "description": "An AI-powered natural language game generator. Describe your game idea, and MOA builds a fully functional, playable web game instantly.",
+  "requestFramePermissions": []
+}
